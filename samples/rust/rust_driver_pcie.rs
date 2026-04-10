@@ -90,6 +90,81 @@ impl SampleDriver {
             config.read32(0x10)
         );
     }
+    /// NEW: Read PCIe capabilities pointer from legacy config space at 0x34,
+    /// then parse the first PCIe capability header in extended configuration space.
+    ///
+    /// The PCIe Extended Configuration Space is 4096 bytes (vs. legacy 256 bytes).
+    /// The standard places a pointer at offset 0x34 in legacy config space that
+    /// contains an 18-bit value pointing into the extended configuration space.
+    /// The capability header itself follows the PCIe capability structure with:
+    ///   - Offset 0-1 (high byte): Capability type
+    ///   - Offset 2 (low byte): Control/status flags
+    ///   - Offset 6: Next capability offset (0xFFFE if last)
+    fn config_space_extended(pdev: &pci::Device<Bound>) -> Result {
+        // Get access to extended configuration space (4096 bytes).
+        let config = pdev.config_space_extended()?;
+
+        // Read from offset 0x34 - PCIe Capabilities Pointer in legacy config space.
+        // This value is an 18-bit pointer into the extended configuration space region.
+        // The actual offset into the 4KB extended space is given directly by this byte.
+        // PCI spec: struct pci_cap_ptr stores the capabilities pointer as an 18-bit value in a single byte.
+        let cap_offset = config.read8(0x34) as usize;
+
+        dev_info!(
+            pdev,
+            "pci-driver legacy config space[0x34] read16 capabilities pointer: {:02x}\n",
+            cap_offset
+        );
+
+        // Read from the capabilities pointer offset - PCIe Extended Capability header.
+        let cap_header = config.read32(cap_offset);
+
+        dev_info!(
+            pdev,
+            "pci-driver extended config space read32 at offset [0x{:04x}] capability header value: {:08x}\n",
+            cap_offset,
+            cap_header
+        );
+
+        let cap_id = config.read8(cap_offset);
+
+        dev_info!(
+            pdev,
+            "pci-driver extended config space at offset [0x{:04x}] read8 capability id: {:02x}\n",
+            cap_offset,
+            cap_id,
+        );
+
+        let ctrl = config.read16(cap_offset + 8);
+
+        dev_info!(
+            pdev,
+            "pci-driver extended config space at offset [0x{:04x}] read16 control: {:04x}\n",
+            cap_offset + 8,
+            ctrl
+        );
+
+        let status = config.read16(cap_offset + 10);
+
+        dev_info!(
+            pdev,
+            "pci-driver extended config space at offset [0x{:04x}] read16 status: {:04x}\n",
+            cap_offset + 10,
+            status
+        );
+
+        // Read next capability offset (multi-byte capabilities use this)
+        let next_cap = config.read8(cap_offset + 1);
+
+        dev_info!(
+            pdev,
+            "pci-driver extended config space at offset [0x{:04x}] read8 next cap: {:02x}\n",
+            cap_offset + 1,
+            next_cap
+        );
+
+        Ok(())
+    }
 }
 
 impl pci::Driver for SampleDriver {
@@ -122,6 +197,9 @@ impl pci::Driver for SampleDriver {
                         Self::testdev(info, bar)?
                     );
                     Self::config_space(pdev);
+
+                    // NEW: Call the extended config space capability parser
+                    Self::config_space_extended(pdev)?;
                 },
                 pdev: pdev.into(),
             }))
